@@ -40,7 +40,7 @@ class M4BCreator:
                 ))
                 logger.addHandler(handler)
         self.verbose = verbose
-        logger.debug("Initializing M4BCreator")e
+        logger.debug("Initializing M4BCreator")
         self._verify_ffmpeg()
 
     def _verify_ffmpeg(self):

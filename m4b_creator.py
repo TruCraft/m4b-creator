@@ -6,6 +6,7 @@ Supports MP3, FLAC, M4A, M4B, AAC, OGG, Opus, and WAV input.
 """
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -23,19 +24,31 @@ from mutagen.wave import WAVE
 SUPPORTED_EXTENSIONS = {'.mp3', '.flac', '.m4a', '.m4b', '.aac', '.ogg', '.opus', '.wav'}
 
 
+logger = logging.getLogger(__name__)
+
+
 class M4BCreator:
     """Creates M4B audiobook files from MP3 chapter files."""
 
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
+        if verbose:
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            )
+        self.verbose = verbose
+        logger.debug("Initializing M4BCreator")
         self._verify_ffmpeg()
 
     def _verify_ffmpeg(self):
         """Verify ffmpeg is available."""
+        logger.debug("Checking for ffmpeg installation")
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["ffmpeg", "-version"],
-                capture_output=True, check=True
+                capture_output=True, check=True, text=True
             )
+            logger.debug("ffmpeg found: %s", result.stdout.split('\n')[0])
         except FileNotFoundError:
             raise RuntimeError(
                 "ffmpeg not found. Install it:\n"
@@ -46,9 +59,11 @@ class M4BCreator:
 
     def get_audio_duration(self, file_path: str) -> float:
         """Get duration of an audio file in seconds."""
+        logger.debug("Getting duration for: %s", file_path)
         audio = mutagen.File(file_path)
         if audio is None:
             raise ValueError(f"Unsupported audio format: {file_path}")
+        logger.debug("Duration of %s: %.2fs", Path(file_path).name, audio.info.length)
         return audio.info.length
 
     # Keep old name as alias for compatibility
@@ -56,20 +71,28 @@ class M4BCreator:
 
     def extract_metadata(self, file_path: str) -> Dict:
         """Extract metadata tags from an audio file."""
+        logger.debug("Extracting metadata from: %s", file_path)
         audio = mutagen.File(file_path)
         if audio is None:
+            logger.debug("No metadata found for: %s", file_path)
             return {}
 
         # MP3 uses ID3 frames
         if isinstance(audio, MP3):
-            return self._extract_id3_metadata(audio)
+            tags = self._extract_id3_metadata(audio)
+            logger.debug("ID3 metadata for %s: %s", Path(file_path).name, tags)
+            return tags
 
         # MP4/M4A/M4B/AAC
         if isinstance(audio, MP4):
-            return self._extract_mp4_metadata(audio)
+            tags = self._extract_mp4_metadata(audio)
+            logger.debug("MP4 metadata for %s: %s", Path(file_path).name, tags)
+            return tags
 
         # FLAC, OGG, Opus use Vorbis-style tags
-        return self._extract_vorbis_metadata(audio)
+        tags = self._extract_vorbis_metadata(audio)
+        logger.debug("Vorbis metadata for %s: %s", Path(file_path).name, tags)
+        return tags
 
     # Keep old name as alias for compatibility
     extract_mp3_metadata = extract_metadata
@@ -159,8 +182,10 @@ class M4BCreator:
 
     def extract_cover(self, file_path: str) -> Optional[bytes]:
         """Extract embedded cover art from an audio file. Returns raw image bytes."""
+        logger.debug("Extracting cover art from: %s", file_path)
         audio = mutagen.File(file_path)
         if audio is None:
+            logger.debug("No audio data found for cover extraction: %s", file_path)
             return None
 
         # MP3 - ID3 APIC frames
@@ -243,12 +268,17 @@ class M4BCreator:
         if not files:
             raise ValueError("No audio files provided")
 
+        logger.debug("create() called with %d files, output=%s", len(files), output_path)
+        logger.debug("Options: bitrate=%s, use_tags=%s, cover_path=%s", bitrate, use_tags, cover_path)
+        logger.debug("Metadata: title=%s, author=%s, narrator=%s, year=%s", title, author, narrator, year)
+
         for f in files:
             if not os.path.isfile(f):
                 raise FileNotFoundError(f"File not found: {f}")
             ext = Path(f).suffix.lower()
             if ext not in SUPPORTED_EXTENSIONS:
                 raise ValueError(f"Unsupported audio format '{ext}': {f}")
+            logger.debug("Validated input file: %s (%s)", f, ext)
 
         if use_tags and not chapter_titles:
             chapter_titles = []
@@ -281,6 +311,11 @@ class M4BCreator:
                         "start_ms": current_time_ms,
                         "end_ms": current_time_ms + duration_ms,
                     })
+                    logger.debug(
+                        "Chapter %d: '%s' [%dms - %dms] (%.2fs)",
+                        idx + 1, ch_title, current_time_ms,
+                        current_time_ms + duration_ms, duration,
+                    )
                     current_time_ms += duration_ms
 
                     # ffmpeg concat demuxer format — must use absolute paths
@@ -288,12 +323,16 @@ class M4BCreator:
                     safe_path = abs_path.replace("'", "'\\''")
                     f.write(f"file '{safe_path}'\n")
 
+            logger.debug("Total duration: %dms across %d chapters", current_time_ms, len(chapters))
+            logger.debug("Concat list written to: %s", concat_list_path)
+
             # Step 2: Concatenate audio files and encode to M4A/AAC
             # Check if all files are already AAC (m4a/m4b/aac) — can stream-copy
             all_aac = all(
                 Path(f).suffix.lower() in {'.m4a', '.m4b', '.aac'}
                 for f in files
             )
+            logger.debug("All files are AAC (stream copy): %s", all_aac)
 
             if all_aac:
                 _progress("Concatenating AAC files (stream copy)...", 0.1)
@@ -314,9 +353,12 @@ class M4BCreator:
 
             cmd.extend(["-movflags", "+faststart", intermediate_m4a])
 
+            logger.debug("Running ffmpeg encode: %s", " ".join(cmd))
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
+                logger.debug("ffmpeg encode stderr:\n%s", result.stderr)
                 raise RuntimeError(f"ffmpeg encoding failed:\n{result.stderr}")
+            logger.debug("Encoding complete: %s", intermediate_m4a)
 
             _progress("Adding chapter markers...", 0.5)
 
@@ -348,6 +390,8 @@ class M4BCreator:
                     f.write(f"END={ch['end_ms']}\n")
                     f.write(f"title={ch['title']}\n\n")
 
+            logger.debug("Chapter metadata written to: %s", metadata_path)
+
             # Step 4: Mux chapters (and optionally cover art) into final M4B
             _progress("Writing M4B file...", 0.7)
 
@@ -359,6 +403,7 @@ class M4BCreator:
 
             # Add cover art input if provided
             if cover_path and os.path.isfile(cover_path):
+                logger.debug("Embedding cover art from: %s", cover_path)
                 cmd.extend(["-i", cover_path])
                 cmd.extend([
                     "-map", "0:a",
@@ -379,10 +424,13 @@ class M4BCreator:
                 output_path,
             ])
 
+            logger.debug("Running ffmpeg mux: %s", " ".join(cmd))
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
+                logger.debug("ffmpeg mux stderr:\n%s", result.stderr)
                 raise RuntimeError(f"ffmpeg chapter muxing failed:\n{result.stderr}")
 
+            logger.debug("M4B created successfully: %s", output_path)
             _progress("Done!", 1.0)
 
         return output_path
@@ -406,11 +454,13 @@ def main():
                         help="AAC bitrate (default: 128k, ignored for AAC input)")
     parser.add_argument("--use-tags", action="store_true",
                         help="Use audio title tags as chapter names")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Enable debug logging")
 
     args = parser.parse_args()
     args.files = sorted(args.files)
 
-    creator = M4BCreator()
+    creator = M4BCreator(verbose=args.verbose)
 
     # Auto-populate metadata from first file if not provided
     try:

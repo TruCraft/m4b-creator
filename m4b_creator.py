@@ -211,6 +211,7 @@ class M4BCreator:
         bitrate: str = "128k",
         progress_callback: Optional[Callable[[str, float], None]] = None,
         audio_files: Optional[List[str]] = None,
+        use_tags: bool = False,
     ) -> str:
         """Create an M4B file from a list of audio files.
 
@@ -227,6 +228,7 @@ class M4BCreator:
             cover_path: Path to cover image (jpg/png).
             bitrate: AAC encoding bitrate (default 128k).
             progress_callback: Optional callback(status_text, fraction_done).
+            use_tags: Use audio title tags as chapter names (ignored if chapter_titles is provided).
 
         Returns:
             Path to the created M4B file.
@@ -247,6 +249,15 @@ class M4BCreator:
             ext = Path(f).suffix.lower()
             if ext not in SUPPORTED_EXTENSIONS:
                 raise ValueError(f"Unsupported audio format '{ext}': {f}")
+
+        if use_tags and not chapter_titles:
+            chapter_titles = []
+            for f in files:
+                try:
+                    tags = self.extract_metadata(f)
+                    chapter_titles.append(tags.get("title", Path(f).stem))
+                except Exception:
+                    chapter_titles.append(Path(f).stem)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Step 1: Build chapter info and concat list
@@ -401,17 +412,6 @@ def main():
 
     creator = M4BCreator()
 
-    # Extract chapter titles from tags if requested
-    chapter_titles = None
-    if args.use_tags:
-        chapter_titles = []
-        for f in args.files:
-            try:
-                tags = creator.extract_metadata(f)
-                chapter_titles.append(tags.get("title", Path(f).stem))
-            except Exception:
-                chapter_titles.append(Path(f).stem)
-
     # Auto-populate metadata from first file if not provided
     try:
         tags = creator.extract_metadata(args.files[0])
@@ -441,7 +441,7 @@ def main():
     creator.create(
         audio_files=args.files,
         output_path=args.output,
-        chapter_titles=chapter_titles,
+        use_tags=args.use_tags,
         title=args.title,
         author=args.author,
         narrator=args.narrator,

@@ -92,7 +92,7 @@ class M4BCreatorApp(tk.Tk):
         cover_frame = ttk.LabelFrame(right, text="Cover Art (optional)", padding=10)
         cover_frame.pack(fill=tk.X, pady=(0, 5))
 
-        self.cover_preview_label = ttk.Label(cover_frame, text="No cover")
+        self.cover_preview_label = tk.Label(cover_frame, text="No cover")
         self.cover_preview_label.pack(side=tk.LEFT, padx=5)
 
         cover_right = ttk.Frame(cover_frame)
@@ -263,15 +263,23 @@ class M4BCreatorApp(tk.Tk):
 
     def _update_cover_preview(self, image_path: str):
         try:
-            from PIL import Image, ImageTk
+            from PIL import Image
+            import io, base64
             img = Image.open(image_path)
+            img.load()
             img.thumbnail((120, 120), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self.cover_preview_label.config(image=photo, text="")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64_data = base64.b64encode(buf.getvalue()).decode("ascii")
+            photo = tk.PhotoImage(data=b64_data)
+            self.cover_preview_label.configure(image=photo)
+            self.cover_preview_label.configure(text="")
             self.cover_preview_label.image = photo
         except ImportError:
             self.cover_preview_label.config(text="[Cover]")
         except Exception:
+            import traceback
+            traceback.print_exc()
             self.cover_preview_label.config(text="[Error]")
 
     # ── M4B creation ────────────────────────────────────────────────
